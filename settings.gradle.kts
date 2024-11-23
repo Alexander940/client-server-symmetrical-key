@@ -1,2 +1,2 @@
-rootProject.name = "client-server-symmetrical-key"
+rootProject.name = "org.example.client-org.example.server-symmetrical-key"
 

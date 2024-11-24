@@ -1,102 +1,98 @@
 package org.example.client;
 
-import javax.crypto.*;
+import javax.crypto.Cipher;
+import javax.crypto.CipherOutputStream;
+import javax.crypto.KeyAgreement;
 import javax.crypto.spec.SecretKeySpec;
 import java.io.*;
-import java.net.Socket;
+import java.net.*;
 import java.security.*;
+import java.security.spec.X509EncodedKeySpec;
 import java.util.Arrays;
-import java.util.Scanner;
 
 public class SecureFileClient {
-    public static void main(String[] args) throws Exception {
-        String serverAddress = "localhost";
+    public static void main(String[] args) {
+        String host = "localhost";
         int port = 12345;
 
-        while (true) {
-            Socket socket = new Socket(serverAddress, port);
-            System.out.println("Conectado al servidor.");
+        try (Socket socket = new Socket(host, port)) {
+            InputStream input = socket.getInputStream();
+            OutputStream output = socket.getOutputStream();
 
-            try {
-                // Establecer Diffie-Hellman para negociar la clave
-                KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance("DH");
-                keyPairGenerator.initialize(2048);
-                KeyPair clientKeyPair = keyPairGenerator.generateKeyPair();
+            // Generar las claves Diffie-Hellman
+            KeyPairGenerator keyPairGen = KeyPairGenerator.getInstance("DH");
+            keyPairGen.initialize(2048);
+            KeyPair keyPair = keyPairGen.generateKeyPair();
 
-                // Recibir la clave pública del servidor
-                ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
-                PublicKey serverPublicKey = (PublicKey) in.readObject();
+            // Recibir la clave pública del servidor
+            byte[] serverPubKeyBytes = new byte[2048];
+            int bytesRead = input.read(serverPubKeyBytes);
+            PublicKey serverPubKey = KeyFactory.getInstance("DH")
+                    .generatePublic(new X509EncodedKeySpec(Arrays.copyOf(serverPubKeyBytes, bytesRead)));
 
-                // Enviar la clave pública al servidor
-                ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-                out.writeObject(clientKeyPair.getPublic());
-                out.flush();
+            // Enviar la clave pública del cliente al servidor
+            output.write(keyPair.getPublic().getEncoded());
+            output.flush();
 
-                // Generar la clave secreta compartida
-                KeyAgreement keyAgreement = KeyAgreement.getInstance("DH");
-                keyAgreement.init(clientKeyPair.getPrivate());
-                keyAgreement.doPhase(serverPublicKey, true);
-                byte[] sharedSecret = keyAgreement.generateSecret();
+            // Generar el secreto compartido
+            KeyAgreement keyAgreement = KeyAgreement.getInstance("DH");
+            keyAgreement.init(keyPair.getPrivate());
+            keyAgreement.doPhase(serverPubKey, true);
 
-                // Derivar una clave AES de 256 bits de la clave compartida
-                byte[] aesKeyBytes = Arrays.copyOf(sharedSecret, 32);
-                SecretKey aesKey = new SecretKeySpec(aesKeyBytes, "AES");
-                System.out.println("Clave AES derivada por el cliente: " + Arrays.toString(aesKeyBytes));
+            byte[] sharedSecret = keyAgreement.generateSecret();
+            MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
+            byte[] aesKeyBytes = sha256.digest(sharedSecret);
+            SecretKeySpec aesKey = new SecretKeySpec(aesKeyBytes, 0, 32, "AES");
 
-                // Solicitar al usuario la ruta del archivo
-                Scanner scanner = new Scanner(System.in);
-                System.out.println("Ingrese la ruta completa del archivo a transferir:");
-                String filePath = scanner.nextLine();
-                File file = new File(filePath);
+            System.out.println("Secreto compartido generado.");
 
-                // Validar si el archivo existe
-                if (!file.exists()) {
-                    System.out.println("El archivo no existe en la ruta proporcionada: " + file.getAbsolutePath());
-                    socket.close();
-                    continue; // Volver al inicio para solicitar otra ruta
-                }
+            // Enviar el archivo cifrado
+            File fileToSend = new File("archivo.txt");
+            Cipher cipher = Cipher.getInstance("AES");
+            cipher.init(Cipher.ENCRYPT_MODE, aesKey);
 
-                // Configurar cifrado AES
-                Cipher aesCipher = Cipher.getInstance("AES/ECB/PKCS5Padding");
-                aesCipher.init(Cipher.ENCRYPT_MODE, aesKey);
+            MessageDigest fileHashDigest = MessageDigest.getInstance("SHA-256");
+            try (FileInputStream fis = new FileInputStream(fileToSend);
+                 DigestInputStream dis = new DigestInputStream(fis, fileHashDigest);
+                 CipherOutputStream cipherOutputStream = new CipherOutputStream(output, cipher)) {
 
-                // Cifrar y enviar el archivo
-                FileInputStream fis = new FileInputStream(file);
-                CipherOutputStream cos = new CipherOutputStream(socket.getOutputStream(), aesCipher);
                 byte[] buffer = new byte[1024];
-                int bytesRead;
-                while ((bytesRead = fis.read(buffer)) != -1) {
-                    cos.write(buffer, 0, bytesRead);
+                int len;
+                while ((len = dis.read(buffer)) != -1) {
+                    cipherOutputStream.write(buffer, 0, len);
                 }
-                fis.close();
-                cos.flush();
-                socket.shutdownOutput();
-                System.out.println("Archivo enviado.");
 
-                // Calcular hash SHA-256 del archivo enviado
-                MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
-                fis = new FileInputStream(file);
-                while ((bytesRead = fis.read(buffer)) != -1) {
-                    sha256.update(buffer, 0, bytesRead);
-                }
-                fis.close();
-                byte[] fileHash = sha256.digest();
-                System.out.println("Hash calculado por el cliente: " + Arrays.toString(fileHash));
-
-                // Recibir hash del servidor y verificar integridad
-                byte[] serverHash = (byte[]) in.readObject();
-                System.out.println("Hash recibido del servidor: " + Arrays.toString(serverHash));
-                if (MessageDigest.isEqual(fileHash, serverHash)) {
-                    System.out.println("El archivo se transfirió correctamente.");
-                } else {
-                    System.out.println("Error en la transferencia del archivo: Hash no coincide.");
-                }
-            } catch (Exception e) {
-                e.printStackTrace();
-            } finally {
-                socket.close();
-                System.out.println("Conexión cerrada. Puede ingresar otra ruta.");
+                cipherOutputStream.flush();
+                System.out.println("Archivo enviado y cifrado: " + fileToSend.getAbsolutePath());
             }
+
+            // Calcular el hash del archivo
+            byte[] fileHash = fileHashDigest.digest();
+            System.out.println("Hash del archivo calculado: " + bytesToHex(fileHash));
+
+            // Enviar el hash al servidor
+            try (DataOutputStream dos = new DataOutputStream(output)) {
+                dos.write(fileHash); // Enviar el hash de 32 bytes
+                dos.flush();
+            }
+            System.out.println("Hash enviado al servidor.");
+
+            // Recibir confirmación del servidor
+            try (BufferedReader serverResponse = new BufferedReader(new InputStreamReader(input))) {
+                String confirmation = serverResponse.readLine();
+                System.out.println("Respuesta del servidor: " + confirmation);
+            }
+        } catch (Exception e) {
+            System.err.println("Error en el cliente: " + e.getMessage());
+            e.printStackTrace();
         }
+    }
+
+    private static String bytesToHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : bytes) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
     }
 }

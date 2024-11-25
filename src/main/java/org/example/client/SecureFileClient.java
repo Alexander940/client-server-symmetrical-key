@@ -1,5 +1,7 @@
 package org.example.client;
 
+import org.example.util.HashUtil;
+
 import javax.crypto.Cipher;
 import javax.crypto.CipherOutputStream;
 import javax.crypto.KeyAgreement;
@@ -8,13 +10,27 @@ import java.io.*;
 import java.net.*;
 import java.security.*;
 import java.security.spec.X509EncodedKeySpec;
+import java.util.Scanner;
 
 public class SecureFileClient {
     public static void main(String[] args) {
         String host = "localhost";
         int port = 12345;
 
+        while (true) {
+            handleCommunication(host, port);
+            try {
+                Thread.sleep(5000);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+
+    }
+
+    public static void handleCommunication(String host, int port) {
         try (Socket socket = new Socket(host, port)) {
+            Scanner scanner = new Scanner(System.in);
             InputStream input = socket.getInputStream();
             OutputStream output = socket.getOutputStream();
             DataOutputStream dos = new DataOutputStream(output);
@@ -46,7 +62,18 @@ public class SecureFileClient {
             System.out.println("Secreto compartido generado.");
 
             // Enviar archivo cifrado
-            File fileToSend = new File("archivo.txt");
+            String fileName = "";
+            boolean exists = true;
+            do{
+                if(!exists){
+                    System.out.println("El archivo no existe, intenta de nuevo");
+                }
+                System.out.println("Ingresa el nombre del archivo a enviar: ");
+                fileName = scanner.nextLine();
+                exists = new File(fileName).exists();
+            } while (!exists);
+
+            File fileToSend = new File(fileName);
             Cipher cipher = Cipher.getInstance("AES");
             cipher.init(Cipher.ENCRYPT_MODE, aesKey);
 
@@ -62,11 +89,11 @@ public class SecureFileClient {
             System.out.println("Archivo enviado y cifrado: " + fileToSend.getAbsolutePath());
 
             // Calcular y enviar el hash
-            byte[] hash = calculateFileHash(fileToSend, "SHA-256");
-            System.out.println("Llego hasta aqui");
-            dos.writeInt(hash.length); // Primero envía la longitud del hash
-            System.out.println("Llego hasta aqui 2");
-            dos.write(hash);           // Luego envía los bytes del hash
+            byte[] hash = HashUtil.calculateFileHash(fileToSend, "SHA-256");
+            System.out.println("Hash del archivo: " + HashUtil.bytesToHex(hash));
+
+            dos.writeInt(hash.length);
+            dos.write(hash);
             dos.flush();
 
             // Leer confirmación del servidor
@@ -75,30 +102,5 @@ public class SecureFileClient {
         } catch (Exception e) {
             System.err.println("Error en el cliente: " + e.getMessage());
         }
-    }
-
-    public static byte[] calculateFileHash(File file, String algorithm) throws Exception {
-        MessageDigest messageDigest = MessageDigest.getInstance(algorithm);
-        try (FileInputStream fis = new FileInputStream(file)) {
-            byte[] buffer = new byte[1024];
-            int bytesRead;
-
-            while ((bytesRead = fis.read(buffer)) != -1) {
-                messageDigest.update(buffer, 0, bytesRead);
-            }
-        }
-        return messageDigest.digest();
-    }
-
-    public static String bytesToHex(byte[] bytes) {
-        StringBuilder hexString = new StringBuilder();
-        for (byte b : bytes) {
-            String hex = Integer.toHexString(0xff & b);
-            if (hex.length() == 1) {
-                hexString.append('0');
-            }
-            hexString.append(hex);
-        }
-        return hexString.toString();
     }
 }

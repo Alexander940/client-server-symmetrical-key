@@ -3,13 +3,13 @@ package org.example.server;
 import org.example.util.HashUtil;
 
 import javax.crypto.Cipher;
-import javax.crypto.CipherInputStream;
 import javax.crypto.KeyAgreement;
 import javax.crypto.spec.SecretKeySpec;
 import java.io.*;
 import java.net.*;
 import java.security.*;
 import java.security.spec.X509EncodedKeySpec;
+import java.util.Arrays;
 
 public class SecureFileServer {
     public static void main(String[] args) {
@@ -31,29 +31,30 @@ public class SecureFileServer {
     }
 
     private static void handleClient(Socket client) {
-        try (
-                InputStream input = client.getInputStream();
-                OutputStream output = client.getOutputStream();
-                DataInputStream dis = new DataInputStream(input);
-                DataOutputStream dos = new DataOutputStream(output)
-        ) {
+        try {
+            DataInputStream dis = new DataInputStream(client.getInputStream());
+            DataOutputStream dos = new DataOutputStream(client.getOutputStream());
+
             // Generar claves y establecer el secreto compartido
             KeyPairGenerator keyPairGen = KeyPairGenerator.getInstance("DH");
             keyPairGen.initialize(2048);
             KeyPair keyPair = keyPairGen.generateKeyPair();
 
-            output.write(keyPair.getPublic().getEncoded());
-            output.flush();
+            // Enviar clave pública del servidor
+            byte[] publicKeyBytes = keyPair.getPublic().getEncoded();
+            dos.writeInt(publicKeyBytes.length);
+            dos.write(publicKeyBytes);
+            dos.flush();
 
-            byte[] clientPubKeyBytes = new byte[2048];
-            int bytesRead = input.read(clientPubKeyBytes);
-            byte[] trimmedBytes = new byte[bytesRead];
-            System.arraycopy(clientPubKeyBytes, 0, trimmedBytes, 0, bytesRead);
+            // Recibir clave pública del cliente
+            byte[] clientPubKeyBytes = new byte[dis.readInt()];
+            dis.readFully(clientPubKeyBytes);
 
             KeyFactory keyFactory = KeyFactory.getInstance("DH");
-            X509EncodedKeySpec x509Spec = new X509EncodedKeySpec(trimmedBytes);
+            X509EncodedKeySpec x509Spec = new X509EncodedKeySpec(clientPubKeyBytes);
             PublicKey clientPubKey = keyFactory.generatePublic(x509Spec);
 
+            // Generar secreto compartido
             KeyAgreement keyAgreement = KeyAgreement.getInstance("DH");
             keyAgreement.init(keyPair.getPrivate());
             keyAgreement.doPhase(clientPubKey, true);
@@ -62,34 +63,58 @@ public class SecureFileServer {
             SecretKeySpec aesKey = new SecretKeySpec(sharedSecret, 0, 32, "AES");
             System.out.println("Secreto compartido generado.");
 
-            // Recibir el archivo cifrado
-            File receivedFile = new File("archivo_recibido.txt");
+            // Recibir nombre y tamaño del archivo
+            String fileName = dis.readUTF();
+            long fileSize = dis.readLong();
+
+            // Preparar descifrado
             Cipher cipher = Cipher.getInstance("AES");
             cipher.init(Cipher.DECRYPT_MODE, aesKey);
 
-            try (CipherInputStream cipherInputStream = new CipherInputStream(input, cipher);
-                 FileOutputStream fos = new FileOutputStream(receivedFile)) {
-                byte[] buffer = new byte[1024];
-                int len;
-                while ((len = cipherInputStream.read(buffer)) != -1) {
-                    fos.write(buffer, 0, len);
+            // Recibir y descifrar archivo
+            File receivedFile = new File("received_" + fileName);
+            try (FileOutputStream fos = new FileOutputStream(receivedFile)) {
+                while (true) {
+                    int blockSize = dis.readInt();
+                    if (blockSize == -1) break; // Fin del archivo
+
+                    byte[] encryptedBlock = new byte[blockSize];
+                    dis.readFully(encryptedBlock);
+                    byte[] decryptedBlock = cipher.update(encryptedBlock);
+                    if (decryptedBlock != null) {
+                        fos.write(decryptedBlock);
+                    }
+                }
+                byte[] finalBlock = cipher.doFinal();
+                if (finalBlock != null) {
+                    fos.write(finalBlock);
                 }
             }
+
             System.out.println("Archivo recibido y descifrado: " + receivedFile.getAbsolutePath());
 
-            // Calcular el hash del archivo recibido
-            byte[] fileHash = HashUtil.calculateFileHash(receivedFile, "SHA-256");
-            System.out.println("Hash del archivo: " + HashUtil.bytesToHex(fileHash));
+            // Recibir y verificar hash
+            int hashLength = dis.readInt();
+            byte[] receivedHash = new byte[hashLength];
+            dis.readFully(receivedHash);
 
-            int hashLength = dis.readInt(); // Leer la longitud del hash
-            byte[] hash = new byte[hashLength];
-            dis.readFully(hash);
+            byte[] calculatedHash = HashUtil.calculateFileHash(receivedFile, "SHA-256");
+            System.out.println("Hash calculado: " + HashUtil.bytesToHex(calculatedHash));
+            System.out.println("Hash recibido: " + HashUtil.bytesToHex(receivedHash));
+
+            // Verificar integridad
+            boolean hashesMatch = Arrays.equals(receivedHash, calculatedHash);
+            String confirmationMessage = hashesMatch ?
+                    "Archivo recibido correctamente. Hash verificado." :
+                    "¡Advertencia! Los hashes no coinciden.";
 
             // Enviar confirmación al cliente
-            dos.writeUTF("Archivo y hash recibidos correctamente.");
+            dos.writeUTF(confirmationMessage);
             dos.flush();
+
         } catch (Exception e) {
             System.err.println("Error al comunicarse con el cliente: " + e.getMessage());
+            e.printStackTrace();
         } finally {
             try {
                 client.close();

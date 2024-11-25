@@ -10,7 +10,6 @@ import java.io.*;
 import java.net.*;
 import java.security.*;
 import java.security.spec.X509EncodedKeySpec;
-import java.sql.SQLOutput;
 
 public class SecureFileServer {
     public static void main(String[] args) {
@@ -21,6 +20,7 @@ public class SecureFileServer {
 
             while (true) {
                 Socket client = serverSocket.accept();
+                client.setSoTimeout(60000);
                 System.out.println("Cliente conectado: " + client.getInetAddress().getHostAddress());
 
                 new Thread(() -> handleClient(client)).start();

@@ -12,114 +12,137 @@ import java.security.spec.X509EncodedKeySpec;
 import java.util.Scanner;
 
 public class SecureFileClient {
-    public static void main(String[] args) {
-        String host = "localhost";
-        int port = 12345;
+    private static final String HOST = "localhost";
+    private static final int PORT = 12345;
+    private static final int BUFFER_SIZE = 8192;
 
-        while (true) {
-            handleCommunication(host, port);
-            try {
-                Thread.sleep(5000);
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
+    public static void main(String[] args) {
+        handleCommunication();
+    }
+
+    private static void handleCommunication() {
+        try (Socket socket = new Socket(HOST, PORT);
+             Scanner scanner = new Scanner(System.in);
+             DataInputStream dis = new DataInputStream(socket.getInputStream());
+             DataOutputStream dos = new DataOutputStream(socket.getOutputStream())) {
+
+            KeyPair keyPair = generateKeyPair();
+            PublicKey serverPubKey = exchangePublicKeys(dis, dos, keyPair);
+
+            SecretKeySpec aesKey = generateSharedSecret(keyPair, serverPubKey);
+
+            File fileToSend = promptForFile(scanner);
+
+            sendEncryptedFile(dos, fileToSend, aesKey);
+
+            sendFileHash(dos, fileToSend);
+
+            readServerConfirmation(dis);
+
+        } catch (Exception e) {
+            System.err.println("Error in client: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
-    public static void handleCommunication(String host, int port) {
-        try (Socket socket = new Socket(host, port)) {
-            Scanner scanner = new Scanner(System.in);
-            DataInputStream dis = new DataInputStream(socket.getInputStream());
-            DataOutputStream dos = new DataOutputStream(socket.getOutputStream());
+    private static KeyPair generateKeyPair() throws NoSuchAlgorithmException {
+        KeyPairGenerator keyPairGen = KeyPairGenerator.getInstance("DH");
+        keyPairGen.initialize(2048);
+        return keyPairGen.generateKeyPair();
+    }
 
-            // Generar claves y establecer el secreto compartido
-            KeyPairGenerator keyPairGen = KeyPairGenerator.getInstance("DH");
-            keyPairGen.initialize(2048);
-            KeyPair keyPair = keyPairGen.generateKeyPair();
+    private static PublicKey exchangePublicKeys(DataInputStream dis, DataOutputStream dos, KeyPair keyPair)
+            throws Exception {
+        // Receive server's public key
+        byte[] serverPubKeyBytes = new byte[dis.readInt()];
+        dis.readFully(serverPubKeyBytes);
 
-            // Intercambio de claves públicas
-            byte[] serverPubKeyBytes = new byte[dis.readInt()];
-            dis.readFully(serverPubKeyBytes);
+        KeyFactory keyFactory = KeyFactory.getInstance("DH");
+        X509EncodedKeySpec x509Spec = new X509EncodedKeySpec(serverPubKeyBytes);
+        PublicKey serverPubKey = keyFactory.generatePublic(x509Spec);
 
-            KeyFactory keyFactory = KeyFactory.getInstance("DH");
-            X509EncodedKeySpec x509Spec = new X509EncodedKeySpec(serverPubKeyBytes);
-            PublicKey serverPubKey = keyFactory.generatePublic(x509Spec);
+        // Send client's public key
+        byte[] publicKeyBytes = keyPair.getPublic().getEncoded();
+        dos.writeInt(publicKeyBytes.length);
+        dos.write(publicKeyBytes);
+        dos.flush();
 
-            // Enviar clave pública del cliente
-            byte[] publicKeyBytes = keyPair.getPublic().getEncoded();
-            dos.writeInt(publicKeyBytes.length);
-            dos.write(publicKeyBytes);
-            dos.flush();
+        return serverPubKey;
+    }
 
-            // Generar secreto compartido
-            KeyAgreement keyAgreement = KeyAgreement.getInstance("DH");
-            keyAgreement.init(keyPair.getPrivate());
-            keyAgreement.doPhase(serverPubKey, true);
+    private static SecretKeySpec generateSharedSecret(KeyPair keyPair, PublicKey serverPubKey)
+            throws Exception {
+        KeyAgreement keyAgreement = KeyAgreement.getInstance("DH");
+        keyAgreement.init(keyPair.getPrivate());
+        keyAgreement.doPhase(serverPubKey, true);
 
-            byte[] sharedSecret = keyAgreement.generateSecret();
-            SecretKeySpec aesKey = new SecretKeySpec(sharedSecret, 0, 32, "AES");
-            System.out.println("Secreto compartido generado.");
+        byte[] sharedSecret = keyAgreement.generateSecret();
+        System.out.println("Shared secret generated.");
+        return new SecretKeySpec(sharedSecret, 0, 32, "AES");
+    }
 
-            // Solicitar archivo
-            String fileName = "";
-            boolean exists = true;
-            do {
-                if(!exists) {
-                    System.out.println("El archivo no existe, intenta de nuevo");
-                }
-                System.out.println("Ingresa el nombre del archivo a enviar: ");
-                fileName = scanner.nextLine();
-                exists = new File(fileName).exists();
-            } while (!exists);
+    private static File promptForFile(Scanner scanner) {
+        File fileToSend;
+        do {
+            System.out.println("Enter the name of the file to send: ");
+            String fileName = scanner.nextLine();
+            fileToSend = new File(fileName);
 
-            File fileToSend = new File(fileName);
+            if (!fileToSend.exists()) {
+                System.out.println("The file does not exist, try again");
+            }
+        } while (!fileToSend.exists());
 
-            // Enviar nombre del archivo
-            dos.writeUTF(fileToSend.getName());
+        return fileToSend;
+    }
 
-            // Enviar tamaño del archivo
-            dos.writeLong(fileToSend.length());
+    private static void sendEncryptedFile(DataOutputStream dos, File fileToSend, SecretKeySpec aesKey)
+            throws Exception {
+        // Send filename and file size
+        dos.writeUTF(fileToSend.getName());
+        dos.writeLong(fileToSend.length());
 
-            // Preparar cifrado
-            Cipher cipher = Cipher.getInstance("AES");
-            cipher.init(Cipher.ENCRYPT_MODE, aesKey);
+        // Prepare encryption
+        Cipher cipher = Cipher.getInstance("AES");
+        cipher.init(Cipher.ENCRYPT_MODE, aesKey);
 
-            // Enviar archivo cifrado
-            byte[] buffer = new byte[8192];
+        // Encrypt and send file
+        byte[] buffer = new byte[BUFFER_SIZE];
+        try (FileInputStream fis = new FileInputStream(fileToSend)) {
             int bytesRead;
-            try (FileInputStream fis = new FileInputStream(fileToSend)) {
-                while ((bytesRead = fis.read(buffer)) != -1) {
-                    byte[] encryptedData = cipher.update(buffer, 0, bytesRead);
-                    if (encryptedData != null) {
-                        dos.writeInt(encryptedData.length);
-                        dos.write(encryptedData);
-                    }
+            while ((bytesRead = fis.read(buffer)) != -1) {
+                byte[] encryptedData = cipher.update(buffer, 0, bytesRead);
+                if (encryptedData != null) {
+                    dos.writeInt(encryptedData.length);
+                    dos.write(encryptedData);
                 }
-                byte[] finalBlock = cipher.doFinal();
-                if (finalBlock != null) {
-                    dos.writeInt(finalBlock.length);
-                    dos.write(finalBlock);
-                }
-                dos.writeInt(-1); // Señal de fin de archivo
-                dos.flush();
             }
 
-            System.out.println("Archivo enviado y cifrado: " + fileToSend.getAbsolutePath());
+            // Send final encrypted block
+            byte[] finalBlock = cipher.doFinal();
+            if (finalBlock != null) {
+                dos.writeInt(finalBlock.length);
+                dos.write(finalBlock);
+            }
 
-            // Calcular y enviar el hash
-            byte[] hash = HashUtil.calculateFileHash(fileToSend, "SHA-256");
-            System.out.println("Hash del archivo: " + HashUtil.bytesToHex(hash));
-            dos.writeInt(hash.length);
-            dos.write(hash);
+            dos.writeInt(-1); // End of file signal
             dos.flush();
-
-            // Leer confirmación del servidor
-            String confirmation = dis.readUTF();
-            System.out.println("Confirmación del servidor: " + confirmation);
-
-        } catch (Exception e) {
-            System.err.println("Error en el cliente: " + e.getMessage());
-            e.printStackTrace();
         }
+
+        System.out.println("File sent and encrypted: " + fileToSend.getAbsolutePath());
+    }
+
+    private static void sendFileHash(DataOutputStream dos, File fileToSend) throws Exception {
+        byte[] hash = HashUtil.calculateFileHash(fileToSend, "SHA-256");
+        System.out.println("File hash: " + HashUtil.bytesToHex(hash));
+
+        dos.writeInt(hash.length);
+        dos.write(hash);
+        dos.flush();
+    }
+
+    private static void readServerConfirmation(DataInputStream dis) throws IOException {
+        String confirmation = dis.readUTF();
+        System.out.println("Server confirmation: " + confirmation);
     }
 }

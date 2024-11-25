@@ -3,6 +3,7 @@ package org.example.server;
 import javax.crypto.Cipher;
 import javax.crypto.CipherInputStream;
 import javax.crypto.KeyAgreement;
+import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import java.io.*;
 import java.net.*;
@@ -57,13 +58,16 @@ public class SecureFileServer {
             MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
             byte[] aesKeyBytes = sha256.digest(sharedSecret);
             SecretKeySpec aesKey = new SecretKeySpec(aesKeyBytes, 0, 32, "AES");
+            System.out.println("Clave AES derivada en cliente/servidor: " + bytesToHex(aesKeyBytes));
 
             System.out.println("Secreto compartido generado.");
 
             // Recibir el archivo cifrado
             File receivedFile = new File("archivo_recibido.txt");
-            Cipher cipher = Cipher.getInstance("AES");
-            cipher.init(Cipher.DECRYPT_MODE, aesKey);
+            byte[] iv = input.readNBytes(16); // Leer el IV, pero no se usa en este caso
+            IvParameterSpec ivSpec = new IvParameterSpec(iv);
+            Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
+            cipher.init(Cipher.DECRYPT_MODE, aesKey, ivSpec);
 
             MessageDigest fileHashDigest = MessageDigest.getInstance("SHA-256");
             try (FileOutputStream fos = new FileOutputStream(receivedFile);

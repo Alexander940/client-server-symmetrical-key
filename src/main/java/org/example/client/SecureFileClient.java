@@ -61,10 +61,61 @@ public class SecureFileClient {
                 }
 
                 cipherOutputStream.flush();
+                fis.close();
                 System.out.println("Archivo enviado y cifrado: " + fileToSend.getAbsolutePath());
             }
+
+            byte[] hash = new byte[0];
+
+            try {
+                hash = calculateFileHash(fileToSend, "SHA-256");
+                System.out.println("Hash del archivo: " + bytesToHex(hash));
+            } catch (Exception e) {
+                System.err.println("Error al calcular el hash del archivo: " + e.getMessage());
+                e.printStackTrace();
+            }
+
+            try (DataOutputStream dos = new DataOutputStream(output)) {
+                String hashHex = bytesToHex(hash); // Convierte el hash a formato hexadecimal
+                dos.writeUTF(hashHex); // Escribe el hash como una cadena de texto
+                dos.flush();
+            }
+            System.out.println("Hash enviado al servidor.");
+
+            // Leer confirmación del servidor
+            try (DataInputStream dis = new DataInputStream(input)) {
+                String confirmation = dis.readUTF();
+                System.out.println("Confirmación del servidor: " + confirmation);
+                dis.close();
+            }
+
         } catch (Exception e) {
             System.err.println("Error en el cliente: " + e.getMessage());
         }
+    }
+
+    public static byte[] calculateFileHash(File file, String algorithm) throws Exception {
+        MessageDigest messageDigest = MessageDigest.getInstance(algorithm);
+        try (FileInputStream fis = new FileInputStream(file)) {
+            byte[] buffer = new byte[1024];
+            int bytesRead;
+
+            while ((bytesRead = fis.read(buffer)) != -1) {
+                messageDigest.update(buffer, 0, bytesRead);
+            }
+        }
+        return messageDigest.digest();
+    }
+
+    public static String bytesToHex(byte[] bytes) {
+        StringBuilder hexString = new StringBuilder();
+        for (byte b : bytes) {
+            String hex = Integer.toHexString(0xff & b);
+            if (hex.length() == 1) {
+                hexString.append('0');
+            }
+            hexString.append(hex);
+        }
+        return hexString.toString();
     }
 }

@@ -8,6 +8,7 @@ import java.io.*;
 import java.net.*;
 import java.security.*;
 import java.security.spec.X509EncodedKeySpec;
+import java.sql.SQLOutput;
 
 public class SecureFileServer {
     public static void main(String[] args) {
@@ -76,14 +77,63 @@ public class SecureFileServer {
 
                 System.out.println("Archivo recibido y descifrado: " + receivedFile.getAbsolutePath());
             }
+
+            String hashFromClient = "";
+
+            try (DataInputStream dis = new DataInputStream(input)) {
+                hashFromClient = dis.readUTF(); // Lee el hash como texto UTF
+                System.out.println("Hash recibido: " + hashFromClient);
+            }
+
+            byte[] hash = new byte[0];
+
+            try {
+                hash = calculateFileHash(receivedFile, "SHA-256");
+                System.out.println("Hash del archivo: " + bytesToHex(hash));
+            } catch (Exception e) {
+                System.err.println("Error al calcular el hash del archivo: " + e.getMessage());
+                e.printStackTrace();
+            }
+
+            // Enviar confirmación al cliente
+            try (DataOutputStream dos = new DataOutputStream(output)) {
+                dos.writeUTF("Archivo y hash recibidos correctamente.");
+                dos.flush();
+            }
         } catch (Exception e) {
             System.err.println("Error al comunicarse con el cliente: " + e.getMessage());
         } finally {
             try {
+                System.out.println("Entro en el finally");
                 client.close();
             } catch (IOException e) {
                 System.err.println("Error al cerrar la conexión: " + e.getMessage());
             }
         }
+    }
+
+    public static byte[] calculateFileHash(File file, String algorithm) throws Exception {
+        MessageDigest messageDigest = MessageDigest.getInstance(algorithm);
+        try (FileInputStream fis = new FileInputStream(file)) {
+            byte[] buffer = new byte[1024];
+            int bytesRead;
+
+            while ((bytesRead = fis.read(buffer)) != -1) {
+                messageDigest.update(buffer, 0, bytesRead);
+            }
+        }
+        return messageDigest.digest();
+    }
+
+    public static String bytesToHex(byte[] bytes) {
+        StringBuilder hexString = new StringBuilder();
+        for (byte b : bytes) {
+            String hex = Integer.toHexString(0xff & b);
+            if (hex.length() == 1) {
+                hexString.append('0');
+            }
+            hexString.append(hex);
+        }
+        return hexString.toString();
     }
 }
